@@ -32,7 +32,7 @@ from gpflowSlim import misc
 from gpflowSlim.transforms import Identity
 
 
-class Parameter(object):
+class Parameter(tf.Module):
     """
     Parameter class is a cornerstone of the GPflow package. It wraps TensorFlow
     variable and its prior and transformation building operations. In GPflow
@@ -141,8 +141,9 @@ class Parameter(object):
         # init var
         vf_value = self.transform.backward(value)
         self.vf_val = tf.get_variable(self.instance_name,
-                                      initializer=tf.cast(vf_value, settings.float_type),
-                                      trainable=self.trainable)
+                                      initializer=tf.cast(vf_value, tf.float64),
+                                      trainable=self.trainable,
+                                      dtype=tf.float64)
 
     @property
     def name(self):
@@ -173,6 +174,25 @@ class Parameter(object):
     def constrained_tensor(self):
         return self.value
 
+    def deref(self):
+        return self
+
+    @property
+    def is_tensor_like(self):
+        """
+        This method means that TensorFlow's `tensor_util.is_tensor` 
+        function will return `True`
+        """
+        return True
+
+    def numpy(self):
+        return self.value.numpy()
+
+    # def _should_act_as_resource_variable(self):  # type unknown
+    #     # needed so that Parameters are correctly identified by TensorFlow's
+    #     # is_resource_variable() in resource_variable_ops.py
+    #     pass  # only checked by TensorFlow using hasattr()
+
     def _build_prior(self, unconstrained_tensor, constrained_tensor):
         """
         Build a tensorflow representation of the prior density.
@@ -192,3 +212,60 @@ class Parameter(object):
         log_jacobian = self.transform.log_jacobian_tensor(unconstrained_tensor)
         logp_var = self.prior.logp(constrained_tensor)
         return tf.squeeze(tf.add(logp_var, log_jacobian, name=prior_name))
+
+
+    # Below
+    # TensorFlow copy-paste code to make variable-like object to work
+
+    def _OverloadAllOperators(cls):  # pylint: disable=invalid-name
+        """Register overloads for all operators."""
+        for operator in tf.Tensor.OVERLOADABLE_OPERATORS:
+            cls._OverloadOperator(operator)
+        # For slicing, bind getitem differently than a tensor (use SliceHelperVar
+        # instead)
+        # pylint: disable=protected-access
+        setattr(cls, "__getitem__", array_ops._SliceHelperVar)
+
+    @classmethod
+    def _OverloadOperator(cls, operator):  # pylint: disable=invalid-name
+        """Defer an operator overload to `ops.Tensor`.
+        We pull the operator out of ops.Tensor dynamically to avoid ordering issues.
+        Args:
+            operator: string. The operator name.
+        """
+        tensor_oper = getattr(tf.Tensor, operator)
+
+        def _run_op(a, *args, **kwargs):
+            # pylint: disable=protected-access
+            return tensor_oper(a.read_value(), *args, **kwargs)
+
+        functools.update_wrapper(_run_op, tensor_oper)
+        setattr(cls, operator, _run_op)
+
+    # NOTE(mrry): This enables the Variable's overloaded "right" binary
+    # operators to run when the left operand is an ndarray, because it
+    # accords the Variable class higher priority than an ndarray, or a
+    # numpy matrix.
+    # TODO(mrry): Convert this to using numpy's __numpy_ufunc__
+    # mechanism, which allows more control over how Variables interact
+    # with ndarrays.
+    __array_priority__ = 100
+
+
+# Parameter._OverloadAllOperators()
+tf.register_tensor_conversion_function(Parameter, lambda x, *args, **kwds: x.value)
+
+
+# def _cast_to_dtype(
+#     value: TensorData, dtype: Optional[DType] = None
+# ) -> Union[tf.Tensor, tf.Variable]:
+#     if dtype is None:
+#         dtype = default_float()
+
+#     if tf.is_tensor(value):
+#         # NOTE(awav) TF2.2 resolves issue with cast.
+#         # From TF2.2, `tf.cast` can be used alone instead of this auxiliary function.
+#         # workaround for https://github.com/tensorflow/tensorflow/issues/35938
+#         return tf.cast(value, dtype)
+#     else:
+#         return tf.convert_to_tensor(value, dtype=dtype)

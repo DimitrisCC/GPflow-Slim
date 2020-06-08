@@ -50,7 +50,8 @@ class Kernel(object):
         If active dims is None, it effectively defaults to range(input_dim),
         but we store it as a slice for efficiency.
         """
-        self._name = name
+        self.name = name
+        self_name = name
         self.input_dim = int(input_dim)
         if active_dims is None:
             self.active_dims = slice(input_dim)
